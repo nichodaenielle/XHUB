@@ -32,8 +32,10 @@ Configure **Parent institution** under Admin → Configuration → Appearance (w
 |---------|----------------|
 | Member list tab | **Roster** |
 | Group area | **{Department} discussions** |
+| Class sections | **Class sections** (channels `sg-{id}`) |
 | Slug `general` | **All members** |
 | Slug `announcements` | **Official notices** |
+| Slug `sg-*` | Subject code + section name (from channel description) |
 | Sync action | **Sync roster** |
 
 ## Avoid in user-facing text
@@ -52,4 +54,6 @@ Configure **Parent institution** under Admin → Configuration → Appearance (w
 | UI | `RECAP/resources/js/components/Messaging/Messaging.jsx` |
 | Admin config | `RECAP/resources/views/admin/configuration.blade.php` |
 | Default room descriptions | `apps/backend/src/recap/recap-sync.service.ts` |
+| Section channel membership | `channel_members` table; `RecapSyncService.syncSubjectGroupChannelMembers` |
 | Push notification titles | `apps/backend/src/websocket/gateway.module.ts` |
+| Section list filter | `apps/backend/src/channels/channels.service.ts` (`findByWorkspace` per user) |

@@ -73,12 +73,185 @@ export class RecapSyncService {
   }
 
   /**
+   * Create subject-group discussion channels (idempotent).
+   * Channel slug: sg-{recapSubjectGroupId} (from RECAP SubjectGroupMessagingService).
+   */
+  async provisionSubjectGroupChannels(workspaceId: string, recapTenantId: string): Promise<void> {
+    const groups = await this.recapService.getTenantSubjectGroups(recapTenantId);
+
+    for (const group of groups) {
+      await this.ensureSubjectGroupChannel(workspaceId, group);
+    }
+  }
+
+  async ensureSubjectGroupChannel(
+    workspaceId: string,
+    group: {
+      id: string;
+      tenant_id?: string;
+      channel_name?: string;
+      channel_description?: string;
+      name?: string;
+      subject_name?: string;
+      member_user_ids?: string[];
+      instructor_ids?: string[];
+    },
+  ): Promise<void> {
+    const channelName = (group.channel_name || `sg-${group.id}`).slice(0, 48);
+    const description =
+      group.channel_description ||
+      [group.subject_name, group.name].filter(Boolean).join(' — ') ||
+      'Class section';
+    const recapGroupId = String(group.id);
+    const memberIds =
+      group.member_user_ids?.length
+        ? group.member_user_ids
+        : (group.instructor_ids ?? []);
+
+    const existing = await this.prisma.channel.findFirst({
+      where: { workspaceId, name: channelName },
+    });
+
+    let channel = existing;
+
+    if (!channel) {
+      channel = await this.prisma.channel.create({
+        data: {
+          workspaceId,
+          name: channelName,
+          type: 'PRIVATE',
+          description,
+          externalId: recapGroupId,
+        },
+      });
+    } else {
+      channel = await this.prisma.channel.update({
+        where: { id: channel.id },
+        data: {
+          type: 'PRIVATE',
+          description,
+          externalId: recapGroupId,
+        },
+      });
+    }
+
+    if (group.tenant_id && memberIds.length > 0) {
+      await this.syncSubjectGroupChannelMembers(
+        channel.id,
+        String(group.tenant_id),
+        memberIds.map(String),
+      );
+    }
+  }
+
+  /**
+   * Sync RECAP user ids into a subject-group channel (instructors, enrolled students, admins).
+   */
+  async syncSubjectGroupChannelMembers(
+    channelId: string,
+    recapTenantId: string,
+    recapUserIds: string[],
+  ): Promise<number> {
+    const xhubUserIds: string[] = [];
+    const externalByXhubId = new Map<string, string>();
+
+    for (const recapUserId of recapUserIds) {
+      try {
+        const recapUser = await this.recapService.getUser(recapUserId);
+        if (recapUser.is_active === false) {
+          continue;
+        }
+        const xhubUser = await this.syncUser(recapUserId);
+        const recapRole = Array.isArray(recapUser.roles) ? recapUser.roles[0] : undefined;
+        await this.addUserToWorkspace(
+          recapUserId,
+          recapTenantId,
+          this.mapRecapRoleToXHUBRole(recapRole),
+        );
+        xhubUserIds.push(xhubUser.id);
+        externalByXhubId.set(xhubUser.id, recapUserId);
+      } catch (error: any) {
+        this.logger.warn(
+          `Skipped channel member sync for RECAP user ${recapUserId}: ${error.message}`,
+        );
+      }
+    }
+
+    const uniqueXhubIds = [...new Set(xhubUserIds)];
+
+    if (uniqueXhubIds.length === 0) {
+      await this.prisma.channelMember.deleteMany({ where: { channelId } });
+      return 0;
+    }
+
+    await this.prisma.channelMember.deleteMany({
+      where: {
+        channelId,
+        userId: { notIn: uniqueXhubIds },
+      },
+    });
+
+    for (const userId of uniqueXhubIds) {
+      await this.prisma.channelMember.upsert({
+        where: {
+          channelId_userId: { channelId, userId },
+        },
+        create: {
+          channelId,
+          userId,
+          externalUserId: externalByXhubId.get(userId),
+        },
+        update: {
+          externalUserId: externalByXhubId.get(userId),
+        },
+      });
+    }
+
+    return uniqueXhubIds.length;
+  }
+
+  async archiveSubjectGroupChannel(workspaceId: string, recapGroupId: string): Promise<void> {
+    const channelName = `sg-${recapGroupId}`.slice(0, 48);
+    const channel = await this.prisma.channel.findFirst({
+      where: { workspaceId, name: channelName },
+    });
+
+    if (!channel) {
+      return;
+    }
+
+    await this.prisma.channelMember.deleteMany({ where: { channelId: channel.id } });
+
+    const archivedDescription = `[ARCHIVED] ${channel.description || ''}`.slice(0, 500);
+    if (channel.description !== archivedDescription) {
+      await this.prisma.channel.update({
+        where: { id: channel.id },
+        data: { description: archivedDescription },
+      });
+    }
+  }
+
+  private async workspaceForRecapTenant(recapTenantId: string) {
+    return this.prisma.workspace.findUnique({
+      where: { externalId: recapTenantId },
+    });
+  }
+
+  async getWorkspaceByRecapTenantId(recapTenantId: string) {
+    return this.workspaceForRecapTenant(recapTenantId);
+  }
+
+  /**
    * Create default public channels for a workspace (idempotent).
    */
   async ensureDefaultChannels(workspaceId: string): Promise<void> {
     const defaults = [
-      { name: 'general', description: 'Organization-wide discussion for all members' },
-      { name: 'announcements', description: 'Official notices from coordinators and administrators' },
+      { name: 'general', description: 'All members' },
+      { name: 'announcements', description: 'Official notices' },
+      {
+        name: 'event-reminders',
+        description: 'Upcoming event reminders — acknowledge each notice (no chat)',
+      },
     ];
 
     for (const channel of defaults) {
@@ -175,6 +348,7 @@ export class RecapSyncService {
 
         await this.ensureDefaultChannels(updatedWorkspace.id);
         await this.provisionDepartmentChannels(updatedWorkspace.id, recapTenantId);
+        await this.provisionSubjectGroupChannels(updatedWorkspace.id, recapTenantId);
         this.logger.log(`Updated workspace: ${recapTenantId}`);
         return updatedWorkspace;
       }
@@ -194,6 +368,7 @@ export class RecapSyncService {
 
       await this.ensureDefaultChannels(newWorkspace.id);
       await this.provisionDepartmentChannels(newWorkspace.id, recapTenantId);
+      await this.provisionSubjectGroupChannels(newWorkspace.id, recapTenantId);
       this.logger.log(`Created new workspace: ${recapTenantId}`);
       return newWorkspace;
     } catch (error: any) {

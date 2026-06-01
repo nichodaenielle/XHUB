@@ -1,7 +1,9 @@
-import { Controller, Post, Body, HttpException, HttpStatus, Logger, Req } from '@nestjs/common';
+import { Controller, Post, Body, HttpException, HttpStatus, Logger, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { RecapService } from './recap.service';
 import { RecapSyncService } from './recap-sync.service';
+import { EventRemindersService, PostEventReminderDto } from './event-reminders.service';
+import { RecapApiSecretGuard } from './recap-api-secret.guard';
 import { AuthService } from '../auth/auth.service';
 
 @Controller('recap')
@@ -11,8 +13,23 @@ export class RecapController {
   constructor(
     private readonly recapService: RecapService,
     private readonly recapSyncService: RecapSyncService,
+    private readonly eventRemindersService: EventRemindersService,
     private readonly authService: AuthService,
   ) {}
+
+  /**
+   * RECAP posts upcoming-event reminders into the event-reminders channel (service auth).
+   */
+  @Post('event-reminder')
+  @UseGuards(RecapApiSecretGuard)
+  async postEventReminder(@Body() body: PostEventReminderDto) {
+    if (!body?.tenant_id || !body?.event_id || !body?.event_name || !body?.start_at) {
+      throw new HttpException('Missing required fields', HttpStatus.BAD_REQUEST);
+    }
+
+    const result = await this.eventRemindersService.postReminder(body);
+    return { success: true, ...result };
+  }
 
   /**
    * Exchange a RECAP-issued token for an XHUB access/refresh token pair.
@@ -92,17 +109,22 @@ export class RecapController {
    */
   @Post('webhook')
   async handleWebhook(
-    @Body() body: { event: string; data: any; signature?: string },
+    @Req() req: Request,
+    @Body() body: { event: string; data: any; timestamp?: string; signature?: string },
   ) {
     try {
-      // Verify webhook signature if provided
-      if (body.signature) {
-        const payload = JSON.stringify({ event: body.event, data: body.data });
-        const isValid = this.recapService.verifyWebhookSignature(payload, body.signature);
-        
-        if (!isValid) {
-          throw new HttpException('Invalid webhook signature', HttpStatus.UNAUTHORIZED);
-        }
+      // Signed webhooks are mandatory. Accept the signature/timestamp from headers
+      // (preferred) or the body for backward compatibility.
+      const headerSignature = req.headers['x-recap-signature'];
+      const headerTimestamp = req.headers['x-recap-timestamp'];
+      const signature =
+        (typeof headerSignature === 'string' ? headerSignature : undefined) ?? body.signature;
+      const timestamp =
+        (typeof headerTimestamp === 'string' ? headerTimestamp : undefined) ?? body.timestamp;
+
+      const isValid = this.recapService.verifyWebhook(body.event, body.data, timestamp, signature);
+      if (!isValid) {
+        throw new HttpException('Invalid webhook signature', HttpStatus.UNAUTHORIZED);
       }
 
       this.logger.log(`Received webhook event: ${body.event}`);
@@ -127,12 +149,25 @@ export class RecapController {
         case 'tenant.deleted':
           await this.handleTenantDeleted(body.data);
           break;
+        case 'subject_group.created':
+          await this.handleSubjectGroupCreated(body.data);
+          break;
+        case 'subject_group.updated':
+          await this.handleSubjectGroupUpdated(body.data);
+          break;
+        case 'subject_group.deleted':
+          await this.handleSubjectGroupDeleted(body.data);
+          break;
         default:
           this.logger.warn(`Unknown webhook event: ${body.event}`);
       }
 
       return { success: true };
     } catch (error) {
+      // Preserve auth/validation status codes (e.g. 401 invalid signature).
+      if (error instanceof HttpException) {
+        throw error;
+      }
       this.logger.error(`Webhook processing failed: ${error.message}`);
       throw new HttpException(
         'Webhook processing failed',
@@ -175,8 +210,8 @@ export class RecapController {
 
   private async handleTenantCreated(data: any) {
     this.logger.log(`Handling tenant.created: ${data.id}`);
-    const workspace = await this.recapSyncService.syncTenant(data.id);
-    await this.recapSyncService.ensureDefaultChannels(workspace.id);
+    // syncTenant provisions general, dept-*, and sg-* channels
+    await this.recapSyncService.syncTenant(data.id);
   }
 
   private async handleTenantUpdated(data: any) {
@@ -187,5 +222,34 @@ export class RecapController {
   private async handleTenantDeleted(data: any) {
     this.logger.log(`Handling tenant.deleted: ${data.id}`);
     await this.recapSyncService.archiveWorkspace(data.id);
+  }
+
+  private async handleSubjectGroupCreated(data: any) {
+    this.logger.log(`Handling subject_group.created: ${data.id}`);
+    await this.handleSubjectGroupUpsert(data);
+  }
+
+  private async handleSubjectGroupUpdated(data: any) {
+    this.logger.log(`Handling subject_group.updated: ${data.id}`);
+    await this.handleSubjectGroupUpsert(data);
+  }
+
+  private async handleSubjectGroupDeleted(data: any) {
+    this.logger.log(`Handling subject_group.deleted: ${data.id}`);
+    if (!data?.tenant_id || !data?.id) {
+      return;
+    }
+    const workspace = await this.recapSyncService.getWorkspaceByRecapTenantId(String(data.tenant_id));
+    if (workspace) {
+      await this.recapSyncService.archiveSubjectGroupChannel(workspace.id, String(data.id));
+    }
+  }
+
+  private async handleSubjectGroupUpsert(data: any) {
+    if (!data?.tenant_id) {
+      return;
+    }
+    const workspace = await this.recapSyncService.syncTenant(String(data.tenant_id));
+    await this.recapSyncService.ensureSubjectGroupChannel(workspace.id, data);
   }
 }

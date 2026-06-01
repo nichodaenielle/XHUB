@@ -1,11 +1,20 @@
-import { Module } from '@nestjs/common';
-import { WebSocketGateway, WebSocketServer, SubscribeMessage, OnGatewayConnection, OnGatewayDisconnect } from '@nestjs/websockets';
+import {
+  WebSocketGateway,
+  WebSocketServer,
+  SubscribeMessage,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  OnGatewayInit,
+} from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessagesService } from '../messages/messages.service';
 import { UsersService } from '../users/users.service';
 import { RecapService } from '../recap/recap.service';
+import { ChannelsService } from '../channels/channels.service';
+import { RealtimeBroadcastService } from './realtime-broadcast.service';
+import { isReadOnlyBroadcastChannel } from '../recap/recap-channel.constants';
 
 const wsCorsOrigins = [
   process.env.FRONTEND_URL,
@@ -24,7 +33,7 @@ const wsCorsOrigins = [
     methods: ['GET', 'POST'],
   },
 })
-export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
+export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
   @WebSocketServer()
   server: Server;
 
@@ -34,7 +43,13 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
     private messagesService: MessagesService,
     private usersService: UsersService,
     private recapService: RecapService,
+    private channelsService: ChannelsService,
+    private broadcast: RealtimeBroadcastService,
   ) {}
+
+  afterInit() {
+    this.broadcast.registerServer(this.server);
+  }
 
   async handleConnection(client: Socket) {
     try {
@@ -60,24 +75,24 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
       // Update user status to online
       await this.usersService.updateStatus(user.id, 'ONLINE');
 
-      // Join user's workspace channels
       const workspaces = await this.prisma.workspace.findMany({
         where: {
           members: {
             some: { userId: user.id },
           },
         },
-        include: {
-          channels: true,
-        },
       });
 
-      workspaces.forEach((workspace) => {
-        workspace.channels.forEach((channel) => {
-          client.join(`channel:${channel.id}`);
-        });
-        client.join(`workspace:${workspace.id}`);
-      });
+      // Resolve each workspace's channels in parallel to reduce connect latency.
+      await Promise.all(
+        workspaces.map(async (workspace) => {
+          client.join(`workspace:${workspace.id}`);
+          const channels = await this.channelsService.findByWorkspace(workspace.id, user.id);
+          channels.forEach((channel) => {
+            client.join(`channel:${channel.id}`);
+          });
+        }),
+      );
 
       // Notify others that user is online
       workspaces.forEach((workspace) => {
@@ -123,20 +138,11 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('join_channel')
   async handleJoinChannel(client: Socket, data: { channelId: string }) {
     try {
-      const channel = await this.prisma.channel.findUnique({
-        where: { id: data.channelId },
-        include: {
-          workspace: {
-            include: {
-              members: {
-                where: { userId: client.data.userId },
-              },
-            },
-          },
-        },
-      });
-
-      if (!channel || channel.workspace.members.length === 0) {
+      const allowed = await this.channelsService.canUserAccessChannel(
+        data.channelId,
+        client.data.userId,
+      );
+      if (!allowed) {
         return { error: 'Not authorized to join this channel' };
       }
 
@@ -155,6 +161,13 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('typing_start')
   async handleTypingStart(client: Socket, data: { channelId: string }) {
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: data.channelId },
+      select: { name: true },
+    });
+    if (isReadOnlyBroadcastChannel(channel?.name)) {
+      return;
+    }
     client.to(`channel:${data.channelId}`).emit('user_typing', {
       channelId: data.channelId,
       userId: client.data.userId,
@@ -180,6 +193,14 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     try {
+      const allowed = await this.channelsService.canUserAccessChannel(
+        data.channelId,
+        client.data.userId,
+      );
+      if (!allowed) {
+        return { error: 'Not authorized' };
+      }
+
       const channel = await this.prisma.channel.findUnique({
         where: { id: data.channelId },
         include: {
@@ -187,31 +208,33 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
             select: {
               id: true,
               externalId: true,
-              members: {
-                where: { userId: client.data.userId },
-              },
             },
           },
         },
       });
 
-      if (!channel || channel.workspace.members.length === 0) {
-        return { error: 'Not authorized' };
+      if (!channel) {
+        return { error: 'Channel not found' };
+      }
+
+      if (isReadOnlyBroadcastChannel(channel.name)) {
+        return { error: 'This channel is read-only' };
       }
 
       const message = await this.messagesService.create(client.data.userId, {
         channelId: data.channelId,
         content: data.content.trim(),
         replyToId: data.replyToId,
-      });
+      }, false); // Skip broadcast in service since gateway broadcasts below
 
       this.server.to(`channel:${data.channelId}`).emit('message', message);
 
       void this.notifyRecapRecipients(channel, message, client.data.userId);
 
       return { success: true, message };
-    } catch {
-      return { error: 'Failed to send message' };
+    } catch (error: any) {
+      console.error('Message send error:', error);
+      return { error: error?.message || 'Failed to send message' };
     }
   }
 
@@ -220,14 +243,26 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    const members = await this.prisma.workspaceMember.findMany({
-      where: { workspaceId: channel.workspaceId },
-      include: { user: { select: { id: true, externalId: true, displayName: true } } },
-    });
+    const isSection = channel.name?.startsWith('sg-');
+    let recipients: string[] = [];
 
-    const recipients = members
-      .filter((m) => m.userId !== senderUserId && m.user.externalId)
-      .map((m) => String(m.user.externalId));
+    if (isSection) {
+      const channelMembers = await this.prisma.channelMember.findMany({
+        where: { channelId: channel.id },
+        include: { user: { select: { id: true, externalId: true } } },
+      });
+      recipients = channelMembers
+        .filter((m) => m.userId !== senderUserId && m.user.externalId)
+        .map((m) => String(m.user.externalId));
+    } else {
+      const members = await this.prisma.workspaceMember.findMany({
+        where: { workspaceId: channel.workspaceId },
+        include: { user: { select: { id: true, externalId: true, displayName: true } } },
+      });
+      recipients = members
+        .filter((m) => m.userId !== senderUserId && m.user.externalId)
+        .map((m) => String(m.user.externalId));
+    }
 
     if (recipients.length === 0) {
       return;
@@ -269,6 +304,7 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
     const displayNames: Record<string, string> = {
       general: 'All members',
       announcements: 'Official notices',
+      'event-reminders': 'Event reminders',
     };
     if (displayNames[channel.name]) {
       return displayNames[channel.name];
@@ -276,6 +312,9 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect {
     if (channel.name.startsWith('dept-')) {
       const dept = channel.name.slice(5).replace(/-/g, ' ');
       return dept.charAt(0).toUpperCase() + dept.slice(1);
+    }
+    if (channel.name.startsWith('sg-')) {
+      return 'Class section';
     }
     return channel.name;
   }

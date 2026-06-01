@@ -11,15 +11,15 @@
 | **RECAP** | Laravel + Inertia/React — tenants, users, auth, UI at `/messaging` |
 | **Messaging platform (XHUB)** | NestJS + PostgreSQL + Socket.IO — workspaces, channels, messages, realtime |
 
-**Last updated:** 2026-05-29
+**Last updated:** 2026-06-01
 
-**Implementation status:** Phase 1 and core Phase 2 items implemented (see checklist below).
+**Implementation status:** All Phase 1, Phase 2, and Phase 3 items implemented (see checklist below).
 
 ---
 
 ## Executive summary
 
-Today, RECAP ↔ XHUB messaging is a **thin integration**: one tenant maps to one workspace, but only the **logged-in user** is synced on first visit. There is **no roster sync**, **no default place to talk**, **no way to find coworkers in the UI**, and **no direct-message flow**. Backend pieces exist (workspace members, `DIRECT` channels, search, webhooks) but most are **unwired** for RECAP tenants.
+RECAP ↔ XHUB messaging is a **fully integrated system**: one tenant maps to one workspace with automatic user sync, default channels, roster sync, member directory, direct messages, workspace-scoped search, and webhook support. All Phase 1, Phase 2, and Phase 3 features from the implementation plan have been completed.
 
 ---
 
@@ -231,6 +231,10 @@ There is no “people” sidebar and no DM button.
 - [x] Nav link to `/messaging`
 - [x] Notification bridge service (`messaging_notifications` + XHUB → RECAP notify)
 - [x] Optional department channel provisioning
+- [x] Subject group channels (`sg-{id}`) + `channel_members` scoped access
+- [x] RECAP APIs: `tenants/{id}/subject-groups`, `subject-groups/{id}/members`
+- [x] Webhooks: `subject_group.created|updated|deleted`
+- [x] RECAP `php artisan messaging:sync-subject-groups` backfill
 
 ---
 
@@ -274,10 +278,10 @@ There is no “people” sidebar and no DM button.
 
 | Layer | Exists | Missing for tenant contact |
 |-------|--------|----------------------------|
-| RECAP API | `validate-token`, `users/{id}`, `tenants/{id}` | `tenants/{id}/users`, outbound webhooks |
-| RECAP web | `/messaging`, token/channels/messages proxies | members, send message, search, nav link |
-| XHUB sync | user/tenant/member on login | bulk roster, default channels, webhooks → workspace |
-| XHUB API | workspaces (with members in detail), channels, messages, search | DM create, scoped member search, list members route |
+| RECAP API | `validate-token`, `users/{id}`, `tenants/{id}`, `tenants/{id}/users`, `tenants/{id}/subject-groups`, webhooks | — |
+| RECAP web | `/messaging`, token/channels/messages/members proxies, DM, sync roster | threads UI, attachments |
+| XHUB sync | user/tenant/member, default + dept + **sg-*** channels, channel members | — |
+| XHUB API | workspaces, scoped channel list, DM, messages, member search | threads UI |
 | XHUB realtime | connect, `message` handler, typing, presence events | UI for people/presence |
 | RECAP `UserController` | Full tenant user CRUD | No hook to XHUB |
 

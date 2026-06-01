@@ -13,6 +13,7 @@ export class MessagesController {
   @Get('channel/:channelId')
   @ApiOperation({ summary: 'Get messages by channel' })
   async getChannelMessages(
+    @Request() req,
     @Param('channelId') channelId: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -21,6 +22,7 @@ export class MessagesController {
       channelId,
       page ? parseInt(page) : 1,
       limit ? parseInt(limit) : 50,
+      req.user.userId,
     );
   }
 
@@ -46,6 +48,12 @@ export class MessagesController {
   @ApiOperation({ summary: 'Delete message' })
   async deleteMessage(@Param('id') id: string, @Request() req) {
     return this.messagesService.delete(id, req.user.userId);
+  }
+
+  @Post(':id/acknowledge')
+  @ApiOperation({ summary: 'Toggle acknowledge on an event reminder (no chat)' })
+  async acknowledgeReminder(@Param('id') id: string, @Request() req) {
+    return this.messagesService.toggleEventReminderAck(id, req.user.userId);
   }
 
   @Post(':id/reactions')

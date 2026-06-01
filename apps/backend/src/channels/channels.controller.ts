@@ -28,8 +28,8 @@ export class ChannelsController {
 
   @Get('workspace/:workspaceId')
   @ApiOperation({ summary: 'Get channels by workspace' })
-  async getWorkspaceChannels(@Param('workspaceId') workspaceId: string) {
-    return this.channelsService.findByWorkspace(workspaceId);
+  async getWorkspaceChannels(@Param('workspaceId') workspaceId: string, @Request() req) {
+    return this.channelsService.findByWorkspace(workspaceId, req.user.userId);
   }
 
   @Post('direct')

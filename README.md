@@ -1,4 +1,4 @@
-# RECAP Messaging Platform (XHUB)
+# RECAP Messaging Platform
 
 A production-grade, enterprise-ready realtime team messaging service for RECAP organizations. Powers group discussions, private messages, presence, and notifications—integrated with RECAP tenants and departments.
 
@@ -93,6 +93,57 @@ pnpm lint
 # Format code
 pnpm format
 ```
+
+## RECAP integration (production)
+
+RECAP tenants map to **workspaces**. The API runs on port **3001** behind Cloudflare (`xhub.cpu-crums.com` → `127.0.0.1:3001`).
+
+### Channel types
+
+| Slug pattern | Access | Source |
+|--------------|--------|--------|
+| `general`, `announcements` | All workspace members | Auto on tenant sync |
+| `event-reminders` | All workspace members | Read-only: RECAP posts upcoming events; members **Acknowledge** (✅ reaction), no chat |
+| `dept-*` | All workspace members | RECAP departments |
+| `sg-{id}` | **Channel members only** (PRIVATE) | RECAP subject groups (class sections) |
+| `dm:*` | DM participants only | User-initiated |
+
+Section channels (`sg-*`) sync instructors, enrolled students (with RECAP login), and tenant admins/staff from RECAP webhooks and `GET /api/messaging/tenants/{id}/subject-groups`.
+
+### PM2 (Windows server)
+
+```powershell
+cd D:\STGNG\XHUB
+npm run build:backend
+.\scripts\start-backend.ps1    # migration + PM2 start/restart
+npm run pm2:status
+```
+
+Or manually:
+
+```powershell
+npm run db:apply-channel-members   # first deploy / after pull
+npm run build:backend
+npm run pm2:restart
+```
+
+### Environment (`apps/backend/.env`)
+
+| Variable | Purpose |
+|----------|---------|
+| `RECAP_API_URL` | Server-to-server base (e.g. `http://127.0.0.1` with `RECAP_API_HOST`) |
+| `RECAP_API_HOST` | Host header for Laravel vhost (`recap.cpu-crums.com`) |
+| `RECAP_API_SECRET` | Must match RECAP `XHUB_API_SECRET` |
+| `RECAP_WEBHOOK_SECRET` | Verify RECAP → XHUB webhooks |
+
+### Messaging UI
+
+The end-user messaging experience is embedded in **RECAP** at `/messaging` (`RECAP/resources/js/components/Messaging/`, styles in `RECAP/resources/css/messaging.css`). This repo provides the API, realtime gateway, and sync logic.
+
+### Docs
+
+- [RECAP ↔ messaging integration plan](./docs/recap-messaging-integration-plan.md)
+- [Messaging terminology](./docs/messaging-terminology.md)
 
 ## Deployment
 

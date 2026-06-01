@@ -15,9 +15,18 @@
     "format": "turbo run format",
     "clean": "turbo run clean && rm -rf node_modules",
     "db:migrate": "cd apps/backend && npm run db:migrate",
+    "db:generate": "cd apps/backend && npm run db:generate",
+    "db:apply-channel-members": "cd apps/backend && npx prisma db execute --file prisma/migrations/20260530_channel_members/migration.sql",
     "db:seed": "cd apps/backend && npm run db:seed",
     "docker:up": "docker-compose up -d",
-    "docker:down": "docker-compose down"
+    "docker:down": "docker-compose down",
+    "build:backend": "npm run build --prefix apps/backend",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop xhub-api",
+    "pm2:restart": "pm2 restart xhub-api",
+    "pm2:delete": "pm2 delete xhub-api",
+    "pm2:logs": "pm2 logs xhub-api",
+    "pm2:status": "pm2 status xhub-api"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

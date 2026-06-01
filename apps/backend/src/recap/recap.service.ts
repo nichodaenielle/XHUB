@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { AxiosResponse } from 'axios';
+import * as crypto from 'crypto';
 
 interface TokenValidationResponse {
   valid: boolean;
@@ -138,6 +139,52 @@ export class RecapService {
     }
   }
 
+  async getSubjectGroupMembers(subjectGroupId: string): Promise<{
+    member_user_ids: string[];
+    tenant_id?: string;
+    channel_name?: string;
+  }> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.recapApiUrl}/api/messaging/subject-groups/${subjectGroupId}/members`,
+          { headers: this.recapHeaders() },
+        ),
+      );
+      return response.data;
+    } catch (error: any) {
+      this.logger.warn(`Failed to fetch subject group members: ${error.message}`);
+      return { member_user_ids: [] };
+    }
+  }
+
+  async getTenantSubjectGroups(tenantId: string): Promise<Array<{
+    id: string;
+    tenant_id: string;
+    subject_id: string;
+    subject_name?: string;
+    subject_code?: string;
+    name: string;
+    code?: string;
+    description?: string;
+    channel_name: string;
+    channel_description: string;
+    instructor_ids?: string[];
+    member_user_ids?: string[];
+  }>> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(`${this.recapApiUrl}/api/messaging/tenants/${tenantId}/subject-groups`, {
+          headers: this.recapHeaders(),
+        }),
+      );
+      return response.data.subject_groups ?? [];
+    } catch (error: any) {
+      this.logger.warn(`Failed to fetch tenant subject groups: ${error.message}`);
+      return [];
+    }
+  }
+
   async getTenantUsers(tenantId: string): Promise<UserData[]> {
     try {
       const response: AxiosResponse<{ users: UserData[] }> = await firstValueFrom(
@@ -168,19 +215,49 @@ export class RecapService {
     }
   }
 
+  /** Max age (seconds) a signed webhook is accepted, to prevent replay. */
+  private static readonly WEBHOOK_MAX_AGE_SECONDS = 300;
+
   /**
-   * Verify webhook signature
+   * Verify an HMAC-SHA256 signed RECAP webhook.
+   *
+   * RECAP signs `${timestamp}.${JSON.stringify({ event, data })}` with the shared
+   * webhook secret. We reconstruct the same signing string and compare in
+   * constant time, rejecting stale timestamps to mitigate replay attacks.
    */
-  verifyWebhookSignature(payload: string, signature: string): boolean {
+  verifyWebhook(event: string, data: any, timestamp: string | undefined, signature: string | undefined): boolean {
     const webhookSecret = process.env.RECAP_WEBHOOK_SECRET || '';
-    // Simple HMAC verification (implement proper crypto in production)
-    const expectedSignature = this.generateSignature(payload, webhookSecret);
-    return signature === expectedSignature;
+
+    if (!webhookSecret || !signature || !timestamp) {
+      return false;
+    }
+
+    const ts = Number(timestamp);
+    if (!Number.isFinite(ts)) {
+      return false;
+    }
+
+    const ageSeconds = Math.abs(Math.floor(Date.now() / 1000) - ts);
+    if (ageSeconds > RecapService.WEBHOOK_MAX_AGE_SECONDS) {
+      this.logger.warn(`Rejected webhook with stale timestamp (age ${ageSeconds}s)`);
+      return false;
+    }
+
+    const payload = JSON.stringify({ event, data });
+    const expected = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(`${timestamp}.${payload}`)
+      .digest('hex');
+
+    return this.timingSafeEqual(expected, signature);
   }
 
-  private generateSignature(payload: string, secret: string): string {
-    // In production, use crypto.createHmac('sha256', secret).update(payload).digest('hex')
-    // For now, return a simple hash
-    return Buffer.from(payload + secret).toString('base64');
+  private timingSafeEqual(a: string, b: string): boolean {
+    const bufA = Buffer.from(a, 'utf8');
+    const bufB = Buffer.from(b, 'utf8');
+    if (bufA.length !== bufB.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(bufA, bufB);
   }
 }

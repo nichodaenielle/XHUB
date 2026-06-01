@@ -64,8 +64,18 @@ export interface Channel {
   type: ChannelType;
   description?: string;
   topic?: string;
+  /** RECAP subject_group id when name is sg-{id} */
+  externalId?: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ChannelMember {
+  id: string;
+  channelId: string;
+  userId: string;
+  externalUserId?: string | null;
+  joinedAt: Date;
 }
 
 export interface CreateChannelDto {

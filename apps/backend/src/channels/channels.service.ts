@@ -1,9 +1,45 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Channel, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class ChannelsService {
   constructor(private prisma: PrismaService) {}
+
+  isSubjectGroupChannel(channel: Pick<Channel, 'name'>): boolean {
+    return channel.name.startsWith('sg-');
+  }
+
+  isRestrictedChannel(channel: Pick<Channel, 'name' | 'type'>): boolean {
+    return this.isSubjectGroupChannel(channel) || channel.type === 'PRIVATE';
+  }
+
+  /** Channels visible to a workspace member (org-wide public, own DMs, enrolled sections). */
+  workspaceChannelVisibilityFilter(
+    workspaceId: string,
+    userId: string,
+  ): Prisma.ChannelWhereInput {
+    return {
+      workspaceId,
+      OR: [
+        {
+          type: 'PUBLIC',
+          NOT: { name: { startsWith: 'sg-' } },
+        },
+        {
+          type: 'DIRECT',
+          OR: [
+            { name: { startsWith: `dm:${userId}:` } },
+            { name: { endsWith: `:${userId}` } },
+          ],
+        },
+        {
+          name: { startsWith: 'sg-' },
+          members: { some: { userId } },
+        },
+      ],
+    };
+  }
 
   async findById(id: string) {
     const channel = await this.prisma.channel.findUnique({
@@ -26,9 +62,13 @@ export class ChannelsService {
     return channel;
   }
 
-  async findByWorkspace(workspaceId: string) {
+  async findByWorkspace(workspaceId: string, userId?: string) {
+    const where = userId
+      ? this.workspaceChannelVisibilityFilter(workspaceId, userId)
+      : { workspaceId };
+
     return this.prisma.channel.findMany({
-      where: { workspaceId },
+      where,
       orderBy: { createdAt: 'asc' },
       include: {
         _count: {
@@ -151,6 +191,39 @@ export class ChannelsService {
     });
   }
 
+  async canUserAccessChannel(channelId: string, userId: string): Promise<boolean> {
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: channelId },
+      include: {
+        workspace: {
+          include: {
+            members: {
+              where: { userId },
+            },
+          },
+        },
+        members: {
+          where: { userId },
+        },
+      },
+    });
+
+    if (!channel || channel.workspace.members.length === 0) {
+      return false;
+    }
+
+    if (!this.isRestrictedChannel(channel)) {
+      if (channel.type === 'DIRECT') {
+        return (
+          channel.name.startsWith(`dm:${userId}:`) || channel.name.endsWith(`:${userId}`)
+        );
+      }
+      return true;
+    }
+
+    return channel.members.length > 0;
+  }
+
   async checkMembership(channelId: string, userId: string) {
     const channel = await this.prisma.channel.findUnique({
       where: { id: channelId },
@@ -173,6 +246,13 @@ export class ChannelsService {
       throw new ForbiddenException('User is not a member of this workspace');
     }
 
+    const allowed = await this.canUserAccessChannel(channelId, userId);
+    if (!allowed) {
+      throw new ForbiddenException('User cannot access this channel');
+    }
+
     return channel;
   }
+
 }
+

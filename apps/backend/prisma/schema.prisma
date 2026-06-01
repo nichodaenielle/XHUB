@@ -31,6 +31,7 @@ model User {
   notifications        Notification[]
   typingIndicators     TypingIndicator[]
   refreshTokens        RefreshToken[]
+  channelMemberships   ChannelMember[]
 
   @@index([email])
   @@index([username])
@@ -101,17 +102,37 @@ model Channel {
   type        ChannelType @default(PUBLIC)
   description String?
   topic       String?
+  externalId  String?     // RECAP subject_group id for sg-* channels
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   // Relations
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   messages  Message[]
   threads   Thread[]
+  members   ChannelMember[]
 
   @@unique([workspaceId, name])
+  @@unique([externalId])
   @@index([workspaceId])
   @@map("channels")
+}
+
+// Per-channel membership (class sections / private channels)
+model ChannelMember {
+  id             String   @id @default(uuid())
+  channelId      String
+  userId         String
+  externalUserId String?  // RECAP user id
+  joinedAt       DateTime @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([channelId])
+  @@index([userId])
+  @@map("channel_members")
 }
 
 enum ChannelType {
@@ -127,6 +148,7 @@ model Message {
   channelId String
   userId    String
   content   String
+  metadata  Json?
   replyToId String?
   pinned    Boolean  @default(false)
   editedAt  DateTime?

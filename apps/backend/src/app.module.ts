@@ -14,6 +14,8 @@ import { SearchModule } from './search/search.module';
 import { StorageModule } from './storage/storage.module';
 import { QueueModule } from './queue/queue.module';
 import { RecapModule } from './recap/recap.module';
+import { HealthModule } from './health/health.module';
+import { RealtimeBroadcastModule } from './websocket/realtime-broadcast.module';
 
 @Module({
   imports: [
@@ -46,6 +48,8 @@ import { RecapModule } from './recap/recap.module';
     StorageModule,
     QueueModule,
     RecapModule,
+    HealthModule,
+    RealtimeBroadcastModule,
   ],
 })
 export class AppModule {}
