@@ -29,9 +29,11 @@ export interface Message {
   id: string;
   channelId: string;
   userId: string;
-  content: string;
+  content: string | null;
   createdAt: string;
   editedAt?: string | null;
+  deletedAt?: string | null;
+  deleted?: boolean;
   replyToId?: string | null;
   replyTo?: Message | null;
   reactions?: Reaction[];

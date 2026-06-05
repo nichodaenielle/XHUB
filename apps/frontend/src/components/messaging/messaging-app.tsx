@@ -68,6 +68,12 @@ export function MessagingApp() {
   const [reactionPickerOpen, setReactionPickerOpen] = useState<string | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState<string | null>(null);
 
+  // Mention state
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionSuggestions, setMentionSuggestions] = useState<Member[]>([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionUnreadCount, setMentionUnreadCount] = useState(0);
+
   const [initialLoading, setInitialLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -113,6 +119,22 @@ export function MessagingApp() {
   );
 
   const isReminderChannel = isEventRemindersChannel(currentChannel);
+
+  // Check if current user is mentioned in message content
+  const isUserMentioned = useCallback((content: string) => {
+    if (!content || !authUser) return false;
+    const userDisplayName = authUser.displayName?.toLowerCase() || '';
+    const contentLower = content.toLowerCase();
+    // Check for @DisplayName pattern
+    const mentionRegex = /@([^\s]+)/g;
+    let match;
+    while ((match = mentionRegex.exec(content)) !== null) {
+      if (match[1].toLowerCase() === userDisplayName) {
+        return true;
+      }
+    }
+    return false;
+  }, [authUser]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -238,6 +260,11 @@ export function MessagingApp() {
           ...prev,
           [message.channelId]: (prev[message.channelId] || 0) + 1,
         }));
+
+        // Check if user is mentioned
+        if (isUserMentioned(message.content || '')) {
+          setMentionUnreadCount((prev) => prev + 1);
+        }
       }
     };
     const onUserOnline = ({ userId }: { userId: string }) =>
@@ -273,8 +300,30 @@ export function MessagingApp() {
       if (channelId !== currentChannelIdRef.current) return;
       setTypingUsers((prev) => prev.filter((u) => u.userId !== userId));
     };
+    const onMessageUpdated = (message: Message) => {
+      if (message.channelId !== currentChannelIdRef.current) return;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === message.id ? { ...m, ...message } : m)),
+      );
+    };
+    const onMessageDeleted = (data: { messageId: string; channelId: string }) => {
+      if (data.channelId !== currentChannelIdRef.current) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === data.messageId
+            ? { ...m, deleted: true, content: null }
+            : m,
+        ),
+      );
+    };
+    const onMentionReceived = (data: any) => {
+      setMentionUnreadCount((prev) => prev + 1);
+    };
 
     socket.on('message', onMessage);
+    socket.on('message_updated', onMessageUpdated);
+    socket.on('message_deleted', onMessageDeleted);
+    socket.on('mention_received', onMentionReceived);
     socket.on('user_online', onUserOnline);
     socket.on('user_offline', onUserOffline);
     socket.on('user_typing', onTyping);
@@ -282,6 +331,9 @@ export function MessagingApp() {
 
     return () => {
       socket.off('message', onMessage);
+      socket.off('message_updated', onMessageUpdated);
+      socket.off('message_deleted', onMessageDeleted);
+      socket.off('mention_received', onMentionReceived);
       socket.off('user_online', onUserOnline);
       socket.off('user_offline', onUserOffline);
       socket.off('user_typing', onTyping);
@@ -345,6 +397,82 @@ export function MessagingApp() {
     emitTyping(true);
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => emitTyping(false), 1500);
+
+    // Only enable mentions for non-reminder channels
+    if (isReminderChannel) {
+      setMentionQuery('');
+      setMentionSuggestions([]);
+      return;
+    }
+
+    // Detect @ symbol for mentions (supports spaces in display names)
+    const cursorPosition = composeRef.current?.selectionStart || value.length;
+    const textBeforeCursor = value.slice(0, cursorPosition);
+    const mentionMatch = textBeforeCursor.match(/@([^\s]*)$/);
+
+    if (mentionMatch) {
+      const query = mentionMatch[1].toLowerCase();
+      setMentionQuery(query);
+
+      // Filter members for suggestions (preserves spaces for matching)
+      const filtered = members
+        .filter((m) => m.id !== selfId)
+        .filter((m) => {
+          const displayName = m.displayName?.toLowerCase() || '';
+          return displayName.includes(query);
+        })
+        .slice(0, 5); // Limit to 5 suggestions
+
+      setMentionSuggestions(filtered);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery('');
+      setMentionSuggestions([]);
+    }
+  };
+
+  const insertMention = (member: Member) => {
+    const displayName = member.displayName || '';
+    const cursorPosition = composeRef.current?.selectionStart || input.length;
+    const textBeforeCursor = input.slice(0, cursorPosition);
+    const textAfterCursor = input.slice(cursorPosition);
+
+    // Find the @ symbol position (supports spaces in display names)
+    const mentionMatch = textBeforeCursor.match(/@([^\s]*)$/);
+    if (mentionMatch) {
+      const beforeMention = textBeforeCursor.slice(0, mentionMatch.index);
+      const newMessage = `${beforeMention}@${displayName} ${textAfterCursor}`;
+      setInput(newMessage);
+
+      // Move cursor after the inserted mention
+      setTimeout(() => {
+        const newCursorPos = beforeMention.length + displayName.length + 2;
+        composeRef.current?.setSelectionRange(newCursorPos, newCursorPos);
+        composeRef.current?.focus();
+      }, 0);
+    }
+
+    setMentionQuery('');
+    setMentionSuggestions([]);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionSuggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev + 1) % mentionSuggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev - 1 + mentionSuggestions.length) % mentionSuggestions.length);
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        insertMention(mentionSuggestions[mentionIndex]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentionQuery('');
+        setMentionSuggestions([]);
+      }
+    }
   };
 
   // ── Send message (socket with REST fallback) ───────────────────────────
@@ -424,7 +552,7 @@ export function MessagingApp() {
   // ── Edit / delete / react ──────────────────────────────────────────────
   const startEdit = (message: Message) => {
     setEditingMessageId(message.id);
-    setEditContent(message.content);
+    setEditContent(message.content || '');
     setContextMenuOpen(null);
   };
   const cancelEdit = () => {
@@ -447,8 +575,15 @@ export function MessagingApp() {
     setContextMenuOpen(null);
     if (!window.confirm('Delete this message?')) return;
     try {
-      await api.delete(`/messages/${message.id}`);
-      setMessages((prev) => prev.filter((m) => m.id !== message.id));
+      const res = await api.delete(`/messages/${message.id}`);
+      const updated = res.data as Message;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === message.id
+            ? { ...m, ...updated, deleted: true, content: null }
+            : m,
+        ),
+      );
     } catch (err) {
       console.error('[Messaging] Delete failed', err);
     }
@@ -732,6 +867,17 @@ export function MessagingApp() {
               </p>
             )}
           </div>
+          {mentionUnreadCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setMentionUnreadCount(0)}
+              className="flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground transition hover:brightness-110"
+              aria-label={`${mentionUnreadCount} unread mentions`}
+            >
+              <span>@</span>
+              <span>{mentionUnreadCount > 99 ? '99+' : mentionUnreadCount}</span>
+            </button>
+          )}
           <span
             className={cn(
               'flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs',
@@ -813,6 +959,7 @@ export function MessagingApp() {
                       onToggleContextMenu={(id) =>
                         setContextMenuOpen((prev) => (prev === id ? null : id))
                       }
+                      members={members}
                     />
                   </Fragment>
                 );
@@ -875,20 +1022,56 @@ export function MessagingApp() {
                 }}
                 className="flex items-end gap-2.5"
               >
-                <textarea
-                  ref={composeRef}
-                  rows={1}
-                  value={input}
-                  onChange={(e) => handleInputChange(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      sendMessage();
-                    }
-                  }}
-                  placeholder="Write a message…"
-                  className="max-h-[140px] min-h-[44px] flex-1 resize-none rounded-2xl border border-border bg-background px-4 py-2.5 text-[0.9375rem] leading-relaxed text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                />
+                <div className="relative flex-1">
+                  <textarea
+                    ref={composeRef}
+                    rows={1}
+                    value={input}
+                    onChange={(e) => handleInputChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      handleKeyDown(e);
+                      if (e.key === 'Enter' && !e.shiftKey && mentionSuggestions.length === 0) {
+                        e.preventDefault();
+                        sendMessage();
+                      }
+                    }}
+                    placeholder="Write a message…"
+                    className="max-h-[140px] min-h-[44px] w-full resize-none rounded-2xl border border-border bg-background px-4 py-2.5 text-[0.9375rem] leading-relaxed text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
+                  {mentionSuggestions.length > 0 && (
+                    <div className="absolute bottom-full left-0 right-0 mb-2 max-h-48 overflow-y-auto rounded-lg border border-border bg-card shadow-lg">
+                      {mentionSuggestions.map((member, index) => (
+                        <button
+                          key={member.id}
+                          type="button"
+                          onClick={() => insertMention(member)}
+                          onMouseEnter={() => setMentionIndex(index)}
+                          className={cn(
+                            'flex w-full items-center gap-3 px-3 py-2 text-left transition',
+                            index === mentionIndex ? 'bg-primary/10' : 'hover:bg-muted',
+                          )}
+                        >
+                          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-sm font-semibold text-primary-foreground">
+                            {member.avatarUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={member.avatarUrl} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              initialOf(member.displayName)
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-foreground">
+                              {member.displayName}
+                            </p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              @{member.username}
+                            </p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   type="submit"
                   disabled={!input.trim() || sending}

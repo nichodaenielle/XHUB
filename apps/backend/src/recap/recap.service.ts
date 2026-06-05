@@ -76,6 +76,56 @@ export class RecapService {
   }
 
   /**
+   * Validate RECAP credentials (email/password) and return user data
+   */
+  async validateCredentials(email: string, password: string): Promise<{ valid: boolean; user?: UserData; token?: string }> {
+    try {
+      // First, get the login page to obtain CSRF token
+      const loginPageResponse: AxiosResponse<string> = await firstValueFrom(
+        this.httpService.get(`${this.recapApiUrl}/login`, {
+          headers: this.recapHeaders(),
+        }),
+      );
+
+      // Extract CSRF token from the page
+      const csrfTokenMatch = loginPageResponse.data.match(/name="csrf-token" content="([^"]+)"/);
+      const csrfToken = csrfTokenMatch ? csrfTokenMatch[1] : null;
+
+      if (!csrfToken) {
+        this.logger.error('Failed to extract CSRF token from RECAP login page');
+        return { valid: false };
+      }
+
+      // Now POST with CSRF token
+      const response: AxiosResponse<{ success: boolean; user?: UserData; token?: string }> = await firstValueFrom(
+        this.httpService.post(
+          `${this.recapApiUrl}/login`,
+          { email, password, _token: csrfToken },
+          {
+            headers: this.recapHeaders({ 
+              'Content-Type': 'application/json',
+              'X-CSRF-TOKEN': csrfToken,
+            }),
+          },
+        ),
+      );
+
+      if (response.data.success && response.data.user) {
+        return {
+          valid: true,
+          user: response.data.user,
+          token: response.data.token,
+        };
+      }
+
+      return { valid: false };
+    } catch (error: any) {
+      this.logger.error(`Failed to validate credentials: ${error.message}`);
+      return { valid: false };
+    }
+  }
+
+  /**
    * Fetch user data from RECAP by ID
    */
   async getUser(userId: string): Promise<UserData> {

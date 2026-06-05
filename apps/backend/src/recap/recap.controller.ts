@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpException, HttpStatus, Logger, Req, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Body, HttpException, HttpStatus, Logger, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { RecapService } from './recap.service';
 import { RecapSyncService } from './recap-sync.service';
@@ -38,48 +38,36 @@ export class RecapController {
    * without implementing XHUB username/password login.
    */
   @Post('exchange-token')
+  @UseGuards(RecapApiSecretGuard)
   async exchangeToken(
     @Req() req: Request,
-    @Body() body: { token?: string; syncMembers?: boolean },
+    @Body() body: { token?: string; recapToken?: string; user?: any; tenant?: any; syncMembers?: boolean },
   ) {
-    const header = req.headers.authorization;
-    const bearer =
-      typeof header === 'string' && header.toLowerCase().startsWith('bearer ')
-        ? header.slice('bearer '.length)
-        : null;
+    const userData = body.user;
+    const tenantData = body.tenant;
 
-    const token = bearer || body?.token;
-
-    if (!token) {
-      throw new HttpException('No token provided', HttpStatus.BAD_REQUEST);
+    if (!userData || !userData.id) {
+      throw new HttpException('User data required', HttpStatus.BAD_REQUEST);
     }
 
-    const validation = await this.recapService.validateToken(token);
-
-    if (!validation.valid || !validation.user) {
-      throw new HttpException('Invalid token', HttpStatus.UNAUTHORIZED);
+    const recapUserId = String(userData.id);
+    let recapTenantId = tenantData?.id ? String(tenantData.id) : null;
+    if (!recapTenantId && userData.tenant_id) {
+      recapTenantId = String(userData.tenant_id);
     }
 
-    const recapUserId = String(validation.user.id);
-    let recapTenantId = validation.tenant?.id ? String(validation.tenant.id) : null;
-
-    if (!recapTenantId) {
-      try {
-        const recapUser = await this.recapService.getUser(recapUserId);
-        if (recapUser.tenant_id) {
-          recapTenantId = String(recapUser.tenant_id);
-        }
-      } catch {
-        // ignore; user may have no tenant
-      }
-    }
-
-    const user = await this.recapSyncService.syncUser(recapUserId);
+    // Upsert the user directly from the body — no back-call to RECAP needed.
+    const user = await this.recapSyncService.upsertUserFromBody(userData);
 
     if (recapTenantId) {
-      const workspace = await this.recapSyncService.syncTenant(recapTenantId, user.id);
+      // Upsert workspace from body data, skipping expensive channel provisioning.
+      const workspace = await this.recapSyncService.upsertWorkspaceFromBody(
+        recapTenantId,
+        tenantData,
+        user.id,
+      );
 
-      const recapRole = Array.isArray(validation.user.roles) ? validation.user.roles[0] : undefined;
+      const recapRole = Array.isArray(userData.roles) ? userData.roles[0] : undefined;
       const xhubRole = this.recapSyncService.mapRecapRoleToXHUBRole(recapRole);
       await this.recapSyncService.addUserToWorkspace(recapUserId, recapTenantId, xhubRole);
 
@@ -95,13 +83,37 @@ export class RecapController {
       };
     }
 
-    const tokens = await this.authService.issueTokensForUser(user.id);
-
     return {
       success: true,
       userId: user.id,
-      ...tokens,
+      ...(await this.authService.issueTokensForUser(user.id)),
     };
+  }
+
+  /**
+   * Messaging token endpoint for RECAP to get XHUB access token
+   * This is called by RECAP's messaging feature to authenticate with XHUB
+   */
+  @Get('messaging/token')
+  @UseGuards(RecapApiSecretGuard)
+  async getMessagingToken(@Req() req: Request) {
+    // Generate a service token for RECAP messaging integration
+    // This token should have limited permissions for messaging operations
+    const serviceUserId = 'recap-messaging-service';
+    
+    try {
+      const user = await this.recapSyncService.syncUser(serviceUserId);
+      const tokens = await this.authService.issueTokensForUser(user.id);
+      
+      return {
+        success: true,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+      };
+    } catch (error) {
+      this.logger.error(`Failed to generate messaging token: ${error.message}`);
+      throw new HttpException('Failed to generate messaging token', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   /**

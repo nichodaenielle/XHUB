@@ -34,6 +34,8 @@ async function bootstrap() {
     'https://xhub.cpu-crums.com',
     'http://localhost:3000',
     'http://localhost:5173',
+    'http://10.19.57.40:8000',
+    'http://10.19.57.40:3001',
   ].filter((origin): origin is string => Boolean(origin));
 
   app.enableCors({

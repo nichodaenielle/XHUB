@@ -8,8 +8,11 @@ import { SocketProvider } from '@/components/socket-provider';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'RECAP Messaging',
-  description: 'Team messaging for RECAP organizations',
+  title: 'XHUB - Independent Messaging',
+  description: 'Team messaging platform',
+  icons: {
+    icon: '/favicon.svg',
+  },
 };
 
 export default function RootLayout({

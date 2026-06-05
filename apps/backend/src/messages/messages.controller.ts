@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
@@ -78,5 +79,59 @@ export class MessagesController {
   @ApiOperation({ summary: 'Unpin message' })
   async unpinMessage(@Param('id') id: string, @Request() req) {
     return this.messagesService.unpinMessage(id, req.user.userId);
+  }
+
+  @Post(':id/forward')
+  @ApiOperation({ summary: 'Forward message to another channel' })
+  async forwardMessage(@Param('id') id: string, @Request() req, @Body() data: any) {
+    return this.messagesService.forwardMessage(id, req.user.userId, data);
+  }
+}
+
+@ApiTags('attachments')
+@Controller('attachments')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
+export class AttachmentsController {
+  constructor(private messagesService: MessagesService) {}
+
+  @Post('upload')
+  @ApiOperation({ summary: 'Upload attachment' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAttachment(@Request() req, @UploadedFile() file: any, @Body() body: any) {
+    return this.messagesService.uploadAttachment(req.user.userId, file, body.messageId);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete attachment' })
+  async deleteAttachment(@Param('id') id: string, @Request() req) {
+    return this.messagesService.deleteAttachment(id, req.user.userId);
+  }
+}
+
+@ApiTags('polls')
+@Controller('polls')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
+export class PollsController {
+  constructor(private messagesService: MessagesService) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Create poll' })
+  async createPoll(@Request() req, @Body() data: any) {
+    return this.messagesService.createPoll(req.user.userId, data);
+  }
+
+  @Post(':id/vote')
+  @ApiOperation({ summary: 'Cast vote on poll' })
+  async castVote(@Param('id') id: string, @Request() req, @Body() data: any) {
+    return this.messagesService.castVote(id, req.user.userId, data);
+  }
+
+  @Put(':id')
+  @ApiOperation({ summary: 'Update poll (close poll)' })
+  async updatePoll(@Param('id') id: string, @Request() req, @Body() data: any) {
+    return this.messagesService.updatePoll(id, req.user.userId, data);
   }
 }

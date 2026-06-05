@@ -17,7 +17,70 @@ import {
   initialOf,
   POPULAR_EMOJIS,
   type Message,
+  type Member,
 } from '@/lib/messaging';
+
+// Parse and highlight mentions in message content
+function parseMentions(content: string, members: Member[], selfId: string | null) {
+  if (!content) return content;
+  if (!members || members.length === 0) return content;
+
+  // Build a map of display names to full mentions (preserves spaces)
+  const nameMap = new Map<string, { text: string; isSelf: boolean }>();
+  members.forEach((member) => {
+    const displayName = member.displayName || '';
+    if (displayName) {
+      nameMap.set(displayName.toLowerCase(), {
+        text: `@${displayName}`,
+        isSelf: member.id === selfId,
+      });
+    }
+  });
+
+  // Find all @ patterns and check if they match actual display names (supports spaces)
+  const mentionRegex = /@([^\s]+)/g;
+  const parts: (string | JSX.Element)[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionRegex.exec(content)) !== null) {
+    const mentionText = match[0];
+    const namePart = match[1].toLowerCase();
+
+    // Add text before the mention
+    if (match.index > lastIndex) {
+      parts.push(content.slice(lastIndex, match.index));
+    }
+
+    // Check if this matches an actual display name
+    if (nameMap.has(namePart)) {
+      const mention = nameMap.get(namePart);
+      parts.push(
+        <span
+          key={`mention-${match.index}`}
+          className={cn(
+            'font-semibold',
+            mention?.isSelf ? 'text-primary bg-primary/10 px-1.5 py-0.5 rounded' : 'text-muted-foreground',
+          )}
+        >
+          {mention?.text}
+        </span>
+      );
+    } else {
+      // Not a real mention, just render as text
+      parts.push(mentionText);
+    }
+
+    lastIndex = mentionRegex.lastIndex;
+  }
+
+  // Add remaining text after the last mention
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : content;
+}
 
 interface MessageBubbleProps {
   message: Message;
@@ -37,6 +100,7 @@ interface MessageBubbleProps {
   onToggleReactionPicker: (id: string | null) => void;
   onToggleReaction: (id: string, emoji: string) => void;
   onToggleContextMenu: (id: string) => void;
+  members: Member[];
 }
 
 export function MessageBubble({
@@ -57,9 +121,11 @@ export function MessageBubble({
   onToggleReactionPicker,
   onToggleReaction,
   onToggleContextMenu,
+  members,
 }: MessageBubbleProps) {
   const time = formatMessageTime(message.createdAt);
   const isPending = message._pending === true;
+  const isDeleted = Boolean(message.deleted || message.deletedAt);
   const isReply = Boolean(message.replyTo);
   const isEdited = Boolean(message.editedAt);
   const reactions = aggregateReactions(message.reactions, selfId);
@@ -135,7 +201,11 @@ export function MessageBubble({
             </span>
           )}
 
-          {isEditing ? (
+          {isDeleted ? (
+            <span className="text-sm italic opacity-80">
+              This message has been deleted.
+            </span>
+          ) : isEditing ? (
             <div className="flex flex-col gap-2">
               <input
                 type="text"
@@ -173,7 +243,7 @@ export function MessageBubble({
             </div>
           ) : (
             <span className="whitespace-pre-wrap">
-              {message.content}
+              {parseMentions(message.content || '', members, selfId)}
               {isEdited && (
                 <span className="ml-1.5 text-[0.6875rem] italic opacity-70">
                   (edited)
@@ -229,7 +299,7 @@ export function MessageBubble({
         )}
       </div>
 
-      {!isPending && !isEditing && (
+      {!isPending && !isEditing && !isDeleted && (
         <div
           className={cn(
             'relative self-center opacity-0 transition group-hover:opacity-100',

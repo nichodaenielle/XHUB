@@ -16,4 +16,12 @@ export class RealtimeBroadcastService {
   emitMessageUpdated(channelId: string, message: unknown): void {
     this.server?.to(`channel:${channelId}`).emit('message_updated', message);
   }
+
+  emitMessageDeleted(channelId: string, payload: unknown): void {
+    this.server?.to(`channel:${channelId}`).emit('message_deleted', payload);
+  }
+
+  emitMentionReceived(userId: string, payload: unknown): void {
+    this.server?.to(`user:${userId}`).emit('mention_received', payload);
+  }
 }

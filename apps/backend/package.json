@@ -35,7 +35,7 @@
     "@nestjs/swagger": "^7.1.17",
     "@nestjs/throttler": "^5.1.1",
     "@nestjs/websockets": "^10.3.0",
-    "@prisma/client": "^5.8.1",
+    "@prisma/client": "^5.22.0",
     "@sentry/node": "^7.102.0",
     "@xhub/shared": "workspace:*",
     "aws-sdk": "^2.1542.0",

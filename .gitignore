@@ -19,11 +19,11 @@ dist
 # Misc
 .DS_Store
 *.pem
-.env
-.env*.local
-.env.development
-.env.production
-.env.test
+!.env
+!.env*.local
+!.env.development
+!.env.production
+!.env.test
 
 # Debug
 npm-debug.log*

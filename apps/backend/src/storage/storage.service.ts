@@ -77,4 +77,19 @@ export class StorageService {
     const key = this.generateKey(userId, fileName);
     return this.uploadFile(key, buffer, contentType);
   }
+
+  async uploadAttachmentFile(file: any): Promise<{ url: string; thumbnailUrl?: string }> {
+    const key = this.generateKey('attachment', file.originalname);
+    const { url } = await this.uploadFile(key, file.buffer, file.mimetype);
+
+    // Generate thumbnail for images
+    let thumbnailUrl: string | undefined;
+    if (file.mimetype.startsWith('image/')) {
+      // For now, use the same URL as thumbnail
+      // In production, you'd generate actual thumbnails
+      thumbnailUrl = url;
+    }
+
+    return { url, thumbnailUrl };
+  }
 }

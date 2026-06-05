@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: xhub
-      POSTGRES_PASSWORD: xhub_password
+      POSTGRES_PASSWORD: password@12345
       POSTGRES_DB: xhub
     ports:
       - "5432:5432"

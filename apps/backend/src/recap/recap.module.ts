@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { RecapService } from './recap.service';
 import { RecapController } from './recap.controller';
@@ -11,7 +11,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RealtimeBroadcastModule } from '../websocket/realtime-broadcast.module';
 
 @Module({
-  imports: [HttpModule, PrismaModule, AuthModule, RealtimeBroadcastModule],
+  imports: [HttpModule, PrismaModule, forwardRef(() => AuthModule), RealtimeBroadcastModule],
   controllers: [RecapController],
   providers: [
     RecapService,

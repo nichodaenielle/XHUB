@@ -16,6 +16,8 @@ export interface PostEventReminderDto {
   location?: string | null;
   window?: string;
   recap_event_url?: string;
+  visibility?: 'public' | 'enrolled';
+  subject_group_channel?: string | null;
 }
 
 @Injectable()
@@ -76,9 +78,28 @@ export class EventRemindersService {
       throw new NotFoundException(`Workspace not found for tenant ${dto.tenant_id}`);
     }
 
-    const channel = await this.ensureEventRemindersChannel(workspace.id);
-    const systemUser = await this.ensureSystemUser();
+    // Route enrolled events to their subject group channel; public events go to event-reminders.
+    let channel: { id: string; name: string };
+    const isEnrolled = dto.visibility === 'enrolled' && dto.subject_group_channel;
 
+    if (isEnrolled) {
+      const sgChannel = await this.prisma.channel.findFirst({
+        where: { workspaceId: workspace.id, name: dto.subject_group_channel },
+      });
+      if (!sgChannel) {
+        // Subject group channel doesn't exist yet — skip silently.
+        // It will be created on next sync; reminder can be retried if dispatch record is released.
+        this.logger.warn(
+          `Subject group channel "${dto.subject_group_channel}" not found in workspace ${workspace.id} — skipping enrolled reminder for event ${dto.event_id}`,
+        );
+        throw new NotFoundException(`Subject group channel not found: ${dto.subject_group_channel}`);
+      }
+      channel = sgChannel;
+    } else {
+      channel = await this.ensureEventRemindersChannel(workspace.id);
+    }
+
+    const systemUser = await this.ensureSystemUser();
     const startAt = new Date(dto.start_at);
     const metadata = {
       kind: 'event_reminder',
@@ -105,7 +126,7 @@ export class EventRemindersService {
 
     this.broadcast.emitChannelMessage(channel.id, message);
     this.logger.log(
-      `Posted event reminder for event ${dto.event_id} (tenant ${dto.tenant_id}, window ${metadata.window})`,
+      `Posted event reminder for event ${dto.event_id} (tenant ${dto.tenant_id}, window ${metadata.window}, channel ${channel.name})`,
     );
 
     return { channelId: channel.id, message };

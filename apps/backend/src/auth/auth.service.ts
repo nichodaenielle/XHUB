@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
+import { RecapService } from '../recap/recap.service';
+import { RecapSyncService } from '../recap/recap-sync.service';
 import { RegisterDto, LoginDto } from './dto';
 
 @Injectable()
@@ -13,6 +15,8 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private recapService: RecapService,
+    private recapSyncService: RecapSyncService,
   ) {}
 
   async register(registerDto: RegisterDto) {
@@ -104,6 +108,44 @@ export class AuthService {
     };
   }
 
+  /**
+   * Login using RECAP credentials (email/password)
+   * Validates against RECAP database, syncs user to XHUB, and issues XHUB tokens
+   */
+  async loginWithRecapCredentials(email: string, password: string) {
+    // Validate credentials against RECAP
+    const validation = await this.recapService.validateCredentials(email, password);
+
+    if (!validation.valid || !validation.user) {
+      throw new UnauthorizedException('Invalid RECAP credentials');
+    }
+
+    const recapUserId = String(validation.user.id);
+    let recapTenantId = validation.user.tenant_id ? String(validation.user.tenant_id) : null;
+
+    // Sync user to XHUB
+    const user = await this.recapSyncService.syncUser(recapUserId);
+
+    // If user has a tenant, sync tenant and add user to workspace
+    if (recapTenantId) {
+      const workspace = await this.recapSyncService.syncTenant(recapTenantId, user.id);
+
+      const recapRole = Array.isArray(validation.user.roles) ? validation.user.roles[0] : undefined;
+      const xhubRole = this.recapSyncService.mapRecapRoleToXHUBRole(recapRole);
+      await this.recapSyncService.addUserToWorkspace(recapUserId, recapTenantId, xhubRole);
+    }
+
+    // Generate XHUB tokens
+    const tokens = await this.generateTokens(user.id, user.email);
+
+    const { password: _, ...userWithoutPassword } = user;
+
+    return {
+      user: userWithoutPassword,
+      ...tokens,
+    };
+  }
+
   async refreshTokens(refreshToken: string) {
     const token = await this.prisma.refreshToken.findUnique({
       where: { token: refreshToken },
@@ -161,7 +203,8 @@ export class AuthService {
 
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.configService.get('JWT_REFRESH_SECRET'),
-      expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN'),
+      // Keep refresh token issuance resilient if env key is missing/empty.
+      expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d',
     });
 
     // Save refresh token

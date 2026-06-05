@@ -272,6 +272,74 @@ export class RecapSyncService {
     }
   }
 
+  /**
+   * Upsert a user directly from body data — no back-call to RECAP.
+   */
+  async upsertUserFromBody(userData: {
+    id: string | number;
+    email: string;
+    name: string;
+    roles?: string[];
+    avatar_url?: string | null;
+  }): Promise<any> {
+    const recapUserId = String(userData.id);
+    const existing = await this.prisma.user.findUnique({ where: { externalId: recapUserId } });
+
+    if (existing) {
+      return this.prisma.user.update({
+        where: { id: existing.id },
+        data: { email: userData.email, displayName: userData.name, avatarUrl: userData.avatar_url ?? existing.avatarUrl },
+      });
+    }
+
+    const username = userData.email.split('@')[0] + '_' + Math.random().toString(36).substring(2, 8);
+    return this.prisma.user.create({
+      data: {
+        email: userData.email,
+        username,
+        password: '',
+        displayName: userData.name,
+        avatarUrl: userData.avatar_url ?? null,
+        externalId: recapUserId,
+        status: 'OFFLINE',
+      },
+    });
+  }
+
+  /**
+   * Upsert a workspace from body data — no back-call to RECAP, no channel provisioning.
+   * Channel provisioning happens via POST /messaging/sync (admin-triggered).
+   */
+  async upsertWorkspaceFromBody(
+    recapTenantId: string,
+    tenantData: { name?: string; slug?: string } | null | undefined,
+    ownerId: string,
+  ): Promise<any> {
+    const existing = await this.prisma.workspace.findUnique({ where: { externalId: recapTenantId } });
+
+    if (existing) {
+      if (tenantData?.name && existing.name !== tenantData.name) {
+        return this.prisma.workspace.update({
+          where: { id: existing.id },
+          data: { name: tenantData.name, slug: tenantData.slug ?? existing.slug },
+        });
+      }
+      return existing;
+    }
+
+    const workspace = await this.prisma.workspace.create({
+      data: {
+        name: tenantData?.name ?? `Tenant ${recapTenantId}`,
+        slug: tenantData?.slug ?? recapTenantId,
+        ownerId,
+        externalId: recapTenantId,
+      },
+    });
+
+    await this.ensureDefaultChannels(workspace.id);
+    return workspace;
+  }
+
   async syncUser(recapUserId: string): Promise<any> {
     try {
       const recapUser = await this.recapService.getUser(recapUserId);
