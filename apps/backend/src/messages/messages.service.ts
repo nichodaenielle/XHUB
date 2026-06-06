@@ -739,6 +739,11 @@ export class MessagesService {
     // Get the full message for WebSocket broadcast
     const fullMessage = await this.findById(message.id);
 
+    console.log('[Poll Creation] Broadcasting to channel:', data.channelId);
+    console.log('[Poll Creation] Full message data:', JSON.stringify(fullMessage, null, 2));
+    console.log('[Poll Creation] Has poll?', !!fullMessage.poll);
+    console.log('[Poll Creation] Poll data:', fullMessage.poll);
+
     // Emit the message via WebSocket broadcast
     this.broadcast.emitChannelMessage(data.channelId, fullMessage);
 

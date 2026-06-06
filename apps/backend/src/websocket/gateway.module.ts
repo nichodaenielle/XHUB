@@ -243,9 +243,14 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect, 
   @SubscribeMessage('message')
   async handleMessage(
     client: Socket,
-    data: { channelId: string; content: string; replyToId?: string },
+    data: { channelId: string; content: string; replyToId?: string; attachments?: any[] },
   ) {
-    if (!client.data.userId || !data?.channelId || !data?.content?.trim()) {
+    if (!client.data.userId || !data?.channelId) {
+      return { error: 'Invalid message' };
+    }
+
+    // Allow empty content if there are attachments
+    if (!data?.content?.trim() && !data?.attachments?.length) {
       return { error: 'Invalid message' };
     }
 
@@ -280,8 +285,9 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect, 
 
       const message = await this.messagesService.create(client.data.userId, {
         channelId: data.channelId,
-        content: data.content.trim(),
+        content: data.content?.trim() || '',
         replyToId: data.replyToId,
+        attachments: data.attachments,
       }, false); // Skip broadcast in service since gateway broadcasts below
 
       this.server.to(`channel:${data.channelId}`).emit('message', message);
@@ -350,6 +356,71 @@ export class GatewayModule implements OnGatewayConnection, OnGatewayDisconnect, 
         messageId: data.messageId,
         userId: client.data.userId,
       });
+    }
+  }
+
+  @SubscribeMessage('create_poll')
+  async handleCreatePoll(
+    client: Socket,
+    data: {
+      channelId: string;
+      question: string;
+      options: string[];
+      allowMultiple?: boolean;
+      allowRevote?: boolean;
+      anonymous?: boolean;
+      expiresAt?: string;
+    },
+  ) {
+    if (!client.data.userId || !data?.channelId || !data?.question?.trim() || !data?.options?.length) {
+      return { error: 'Invalid poll data' };
+    }
+
+    try {
+      const allowed = await this.channelsService.canUserAccessChannel(
+        data.channelId,
+        client.data.userId,
+      );
+      if (!allowed) {
+        return { error: 'Not authorized' };
+      }
+
+      const channel = await this.prisma.channel.findUnique({
+        where: { id: data.channelId },
+        include: {
+          workspace: {
+            select: {
+              id: true,
+              externalId: true,
+            },
+          },
+        },
+      });
+
+      if (!channel) {
+        return { error: 'Channel not found' };
+      }
+
+      if (isReadOnlyBroadcastChannel(channel.name)) {
+        return { error: 'This channel is read-only' };
+      }
+
+      const poll = await this.messagesService.createPoll(client.data.userId, {
+        channelId: data.channelId,
+        question: data.question.trim(),
+        options: data.options,
+        allowMultiple: data.allowMultiple || false,
+        allowRevote: data.allowRevote || false,
+        anonymous: data.anonymous || false,
+        expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+      });
+
+      // The messages service already broadcasts the full message via WebSocket
+      // Return the poll object for the acknowledgment
+      return { success: true, poll };
+    } catch (error: any) {
+      console.error('Poll creation error:', error);
+      return { error: error?.message || 'Failed to create poll' };
     }
   }
 
