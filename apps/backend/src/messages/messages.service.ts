@@ -584,12 +584,46 @@ export class MessagesService {
     }
 
     await this.storage.deleteFile(attachment.url);
+  }
 
-    await this.prisma.messageAttachment.delete({
-      where: { id: attachmentId },
+  async clearChannel(channelId: string, userId: string) {
+    // Check if user is admin
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
     });
 
-    return { success: true };
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Check if user is admin (you may need to adjust this based on your auth system)
+    // For now, we'll check if the user is a workspace admin
+    const workspaceMembership = await this.prisma.workspaceMember.findFirst({
+      where: {
+        userId,
+        role: 'ADMIN',
+      },
+    });
+
+    if (!workspaceMembership) {
+      throw new ForbiddenException('Only admins can clear channel conversations');
+    }
+
+    // Check if user can access the channel
+    const allowed = await this.channelsService.canUserAccessChannel(channelId, userId);
+    if (!allowed) {
+      throw new ForbiddenException('Cannot access this channel');
+    }
+
+    // Delete all messages in the channel
+    const result = await this.prisma.message.deleteMany({
+      where: { channelId },
+    });
+
+    // Emit channel cleared event
+    this.broadcast.emitChannelMessage(channelId, { type: 'channel_cleared', channelId, messageCount: result.count });
+
+    return { messageCount: result.count };
   }
 
   async forwardMessage(messageId: string, userId: string, data: any) {

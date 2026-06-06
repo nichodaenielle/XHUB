@@ -51,6 +51,12 @@ export class MessagesController {
     return this.messagesService.delete(id, req.user.userId);
   }
 
+  @Post('channels/:channelId/clear')
+  @ApiOperation({ summary: 'Clear all messages in a channel (admin only)' })
+  async clearChannel(@Param('channelId') channelId: string, @Request() req) {
+    return this.messagesService.clearChannel(channelId, req.user.userId);
+  }
+
   @Post(':id/acknowledge')
   @ApiOperation({ summary: 'Toggle acknowledge on an event reminder (no chat)' })
   async acknowledgeReminder(@Param('id') id: string, @Request() req) {
