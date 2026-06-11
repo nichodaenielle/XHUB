@@ -31,7 +31,7 @@ const wsCorsOrigins = [
 
 @WebSocketGateway({
   cors: {
-    origin: true,
+    origin: wsCorsOrigins,
     credentials: true,
     methods: ['GET', 'POST'],
   },
